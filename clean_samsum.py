@@ -44,9 +44,9 @@ def clean_text(text):
 
 def clean_dialogue(dialogue):
     if not isinstance(dialogue, str):
-        return dialogue
+        return dialogue, {}
 
-    dialogue = normalize_speakers(dialogue)  # 🔸 Bu satır kritik
+    dialogue, speaker_map = normalize_speakers(dialogue)
 
     lines = dialogue.split('\n')
     cleaned_lines = []
@@ -58,11 +58,12 @@ def clean_dialogue(dialogue):
         if cleaned_line:
             cleaned_lines.append(cleaned_line)
 
-    return '\n'.join(cleaned_lines)
+    return '\n'.join(cleaned_lines), speaker_map
+
 
 def normalize_speakers(dialogue):
     if not isinstance(dialogue, str):
-        return dialogue
+        return dialogue, {}  # Speaker map'i de dön
 
     speaker_map = {}
     current_id = 1
@@ -71,7 +72,6 @@ def normalize_speakers(dialogue):
     lines = dialogue.split('\n')
 
     for line in lines:
-        # Eşleşme: "Name: metin"
         match = re.match(r'^([^:]+):\s*(.*)', line)
         if match:
             speaker, utterance = match.groups()
@@ -84,10 +84,19 @@ def normalize_speakers(dialogue):
             normalized_line = f"{speaker_map[speaker]}: {utterance.strip()}"
             normalized_lines.append(normalized_line)
         else:
-            # Konuşmacı etiketi olmayan satırlar direkt eklenir
             normalized_lines.append(line.strip())
 
-    return '\n'.join(normalized_lines)
+    return '\n'.join(normalized_lines), speaker_map
+
+def anonymize_summary(summary, speaker_map):
+    if not isinstance(summary, str):
+        return summary
+
+    for real_name, anon_name in speaker_map.items():
+        # Özet içindeki büyük/küçük harfli eşleşmeleri de değiştir
+        summary = re.sub(rf'\b{re.escape(real_name)}\b', anon_name, summary, flags=re.IGNORECASE)
+
+    return summary
 
 def contains_file_token(text):
     return bool(re.search(r'<file_\w+>', str(text)))
@@ -95,21 +104,38 @@ def contains_file_token(text):
 def process_file(input_file, output_file):
     print(f"Processing {input_file}...")
 
-    # Veri setini oku
     df = pd.read_csv(input_file)
-
-    # <file_...> içeren diyalogları sil
     df = df[~df['dialogue'].apply(contains_file_token)]
 
-    # Temizleme işlemleri
-    df['summary'] = df['summary'].apply(clean_text)
-    df['dialogue'] = df['dialogue'].apply(clean_dialogue)
+    cleaned_dialogues = []
+    cleaned_summaries = []
 
-    # Eksik/boş olanları çıkar
-    df = df.dropna(subset=['summary', 'dialogue'])
+    for idx, row in df.iterrows():
+        dialogue = row['dialogue']
+        summary = row['summary']
 
-    # Temizlenmiş veriyi kaydet
-    df.to_csv(output_file, index=False)
+        if not isinstance(dialogue, str) or not isinstance(summary, str):
+            continue
+
+        # Diyalogu temizle ve speaker map al
+        cleaned_dialogue, speaker_map = clean_dialogue(dialogue)
+
+        # Özeti temizle ve kişi isimlerini anonimleştir
+        cleaned_summary = clean_text(summary)
+        cleaned_summary = anonymize_summary(cleaned_summary, speaker_map)
+
+        # Hem özet hem diyalog boş değilse ekle
+        if cleaned_dialogue.strip() and cleaned_summary.strip():
+            cleaned_dialogues.append(cleaned_dialogue)
+            cleaned_summaries.append(cleaned_summary)
+
+    # Yeni dataframe oluştur
+    cleaned_df = pd.DataFrame({
+        'dialogue': cleaned_dialogues,
+        'summary': cleaned_summaries
+    })
+
+    cleaned_df.to_csv(output_file, index=False)
     print(f"Cleaned data saved to {output_file}")
 
 def main():
